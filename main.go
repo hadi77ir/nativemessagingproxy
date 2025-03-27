@@ -1,4 +1,4 @@
-package nativemessagingproxy
+package main
 
 import (
 	"context"
