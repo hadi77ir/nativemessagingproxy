@@ -234,7 +234,7 @@ func proxyMessage(dst PostFunc, target string, src io.Reader, logger logging.Log
 			return
 		}
 		buf := make([]byte, 4)
-		msgLen := int(binary.BigEndian.Uint32(buf))
+		msgLen := int(binary.NativeEndian.Uint32(buf))
 		logger.Log(logging.TraceLevel, "received msgLen, len = ", msgLen)
 		if msgLen > 8*1024*1024 {
 			sendError(err)
