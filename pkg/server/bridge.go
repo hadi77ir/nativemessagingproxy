@@ -1,10 +1,13 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
+	"github.com/hadi77ir/go-logging"
+	"github.com/hadi77ir/nativemessagingproxy/pkg/log"
 	"io"
 	"net"
 	"net/http"
@@ -40,8 +43,12 @@ func RunBridge(c context.Context) error {
 		}
 
 		cfg := runnable.ContextConfig(c).(*config.Config)
+		logger := log.Global()
 
-		// prepare for launching the process
+		receivedCh := make(chan receivedMessage, 1024)
+
+		logger.Log(logging.TraceLevel, "prepare for launching the process")
+
 		cmd := exec.Command(cfg.Command)
 		inPipe, err := cmd.StdinPipe()
 		if err != nil {
@@ -56,7 +63,7 @@ func RunBridge(c context.Context) error {
 			return err
 		}
 
-		// prepare a dialer
+		logger.Log(logging.TraceLevel, "preparing dialer, proxy = ", cfg.Proxy)
 		var client http.Client
 		if cfg.Proxy != "" {
 			proxyAddr, err := url.Parse(cfg.Proxy)
@@ -76,9 +83,7 @@ func RunBridge(c context.Context) error {
 			}
 		}
 
-		receivedCh := make(chan receivedMessage, 1024)
-
-		// launch an http server
+		logger.Log(logging.DebugLevel, "prepare http server")
 		freePort, err := freeport.GetFreePort()
 		if err != nil {
 			return err
@@ -86,6 +91,7 @@ func RunBridge(c context.Context) error {
 		httpServer := &http.Server{
 			Addr: "127.0.0.1:" + strconv.Itoa(freePort),
 		}
+		logger.Log(logging.TraceLevel, "prepared http server. http server will listen at "+httpServer.Addr)
 
 		// channels
 		errCh := make(chan error, 1)
@@ -100,10 +106,9 @@ func RunBridge(c context.Context) error {
 
 		// handler
 		httpServer.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			receiveMessageFromProxy(receivedCh, w, r, errCh, closeCh)
+			receiveMessageFromProxy(receivedCh, w, r, logger, errCh, closeCh)
 		})
 
-		// listen in background and receive messages tunneled through proxy
 		go func() {
 			err := httpServer.ListenAndServe()
 			if err != nil {
@@ -114,23 +119,22 @@ func RunBridge(c context.Context) error {
 			}
 		}()
 
-		// main operation
-		serverUrl := fmt.Sprintf("http://127.0.0.1:%d/", freePort)
-		// send messages coming from chrome through proxy, to be sent later to native messaging host
-		go proxyMessage(client.Post, serverUrl+ToHost, os.Stdin, errCh, closeCh)
-		// send messages coming from native messaging host through proxy, to be sent later to chrome
-		go proxyMessage(client.Post, serverUrl+ToChrome, outPipe, errCh, closeCh)
+		serverUrl := fmt.Sprintf("http://%s/", httpServer.Addr)
+		logger.Log(logging.InfoLevel, "started http server at "+serverUrl)
 
-		go sendMessageFinal(receivedCh, inPipe, os.Stdout, errCh, closeCh)
-		go func() {
-			_, err := io.Copy(os.Stderr, errPipe)
-			if err != nil {
-				select {
-				case errCh <- err:
-				default:
-				}
-			}
-		}()
+		// main operation
+		// send messages coming from chrome through proxy, to be sent later to native messaging host
+		go proxyMessage(client.Post, serverUrl+ToHost, os.Stdin, logger, errCh, closeCh)
+		// send messages coming from native messaging host through proxy, to be sent later to chrome
+		go proxyMessage(client.Post, serverUrl+ToChrome, outPipe, logger, errCh, closeCh)
+
+		// send any message from queue channel to final destination
+		go sendMessageFinal(receivedCh, inPipe, os.Stdout, logger, errCh, closeCh)
+
+		// pipe errors from process stderr to logger
+		go pipeErrors(logger, errPipe, errCh, closeCh)
+
+		logger.Log(logging.InfoLevel, "proxy is running...")
 
 		select {
 		case <-c.Done():
@@ -141,17 +145,33 @@ func RunBridge(c context.Context) error {
 	}
 }
 
-func sendMessageFinal(receiveChan chan receivedMessage, toHost io.Writer, toChrome io.Writer, errCh chan error, done chan struct{}) {
+func pipeErrors(logger logging.Logger, pipe io.ReadCloser, errCh chan error, done chan struct{}) {
+	scanner := bufio.NewScanner(pipe)
+	scanner.Split(bufio.ScanLines)
+	for scanner.Scan() {
+		logger.Log(logging.InfoLevel, scanner.Text())
+		select {
+		case <-done:
+			return
+		}
+	}
+}
+
+func sendMessageFinal(receiveChan chan receivedMessage, toHost io.Writer, toChrome io.Writer, logger logging.Logger, errCh chan error, done chan struct{}) {
 	for {
 		select {
 		case received := <-receiveChan:
 			var err error
+			logger.Log(logging.DebugLevel, "processing proxied message tag = ", received.Tag, " len = ", len(received.Body))
 			if strings.EqualFold(received.Tag, ToHost) {
+				logger.Log(logging.DebugLevel, "sending message to host, len = ", len(received.Body))
 				err = writeMessage(toHost, received.Body)
 			} else if strings.EqualFold(received.Tag, ToChrome) {
+				logger.Log(logging.DebugLevel, "sending message to chrome, len = ", len(received.Body))
 				err = writeMessage(toChrome, received.Body)
 			}
 			if err != nil {
+				logger.Log(logging.ErrorLevel, "failed to send message to final destination, err = ", err)
 				select {
 				case <-done:
 				case errCh <- err:
@@ -166,10 +186,11 @@ func sendMessageFinal(receiveChan chan receivedMessage, toHost io.Writer, toChro
 
 }
 
-func receiveMessageFromProxy(ch chan receivedMessage, w http.ResponseWriter, r *http.Request, errCh chan error, done chan struct{}) {
+func receiveMessageFromProxy(ch chan receivedMessage, w http.ResponseWriter, r *http.Request, logger logging.Logger, errCh chan error, done chan struct{}) {
 	if r.Method == http.MethodPost && r.Header.Get("Content-Type") == "application/json" {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
+			logger.Log(logging.ErrorLevel, "failed to read message body, err = ", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -177,6 +198,7 @@ func receiveMessageFromProxy(ch chan receivedMessage, w http.ResponseWriter, r *
 			Body: body,
 			Tag:  strings.Trim(r.URL.Path, "/"),
 		}
+		logger.Log(logging.DebugLevel, "received message in the server, putting into queue, len = ", len(message.Body), " tag = ", message.Tag)
 		select {
 		case ch <- message:
 			w.WriteHeader(http.StatusOK)
@@ -191,7 +213,7 @@ func receiveMessageFromProxy(ch chan receivedMessage, w http.ResponseWriter, r *
 
 type PostFunc func(url string, contentType string, body io.Reader) (*http.Response, error)
 
-func proxyMessage(dst PostFunc, target string, src io.Reader, errCh chan error, done <-chan struct{}) {
+func proxyMessage(dst PostFunc, target string, src io.Reader, logger logging.Logger, errCh chan error, done <-chan struct{}) {
 	lenBuf := make([]byte, 4)
 	sendError := func(err error) {
 		select {
@@ -207,29 +229,35 @@ func proxyMessage(dst PostFunc, target string, src io.Reader, errCh chan error, 
 		}
 		_, err := io.ReadAtLeast(src, lenBuf, 4)
 		if err != nil {
+			logger.Log(logging.ErrorLevel, "got error reading message len, err = ", err)
 			sendError(err)
 			return
 		}
 		buf := make([]byte, 4)
 		msgLen := int(binary.BigEndian.Uint32(buf))
+		logger.Log(logging.TraceLevel, "received msgLen, len = ", msgLen)
 		if msgLen > 8*1024*1024 {
 			sendError(err)
 			return
 		}
 		msgBuf := make([]byte, msgLen)
-		_, err = io.ReadAtLeast(src, msgBuf, msgLen)
+		n, err := io.ReadAtLeast(src, msgBuf, msgLen)
 		if err != nil {
+			logger.Log(logging.ErrorLevel, "got error reading message body, err = ", err)
 			sendError(err)
 			return
 		}
+		logger.Log(logging.TraceLevel, "read message, len = ", n)
 
 		// done reading, now send over http to receiver
 		reader := bytes.NewReader(msgBuf)
 		resp, err := dst(target, "application/json", reader)
 		if err != nil {
+			logger.Log(logging.ErrorLevel, "failed to send message over proxy, err = ", err)
 			sendError(err)
 			return
 		}
+		logger.Log(logging.DebugLevel, "sent message over proxy")
 		_ = resp.Body.Close()
 	}
 }

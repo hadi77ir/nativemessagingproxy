@@ -11,10 +11,11 @@ import (
 type Config struct {
 	Command string `json:"command"`
 	Proxy   string `json:"proxy"`
+	LogPath string `json:"log"`
 }
 
 func ConfigPath() string {
-	path := os.Getenv("NMPROXY_CONFIG_FILE")
+	path := os.Getenv("NMPROXY_CONFIG")
 	if path == "" {
 		userPath, err := os.UserConfigDir()
 		if err != nil {
@@ -60,4 +61,5 @@ func EmptyConfig() *Config {
 var emptyConfig Config = Config{
 	Proxy:   "",
 	Command: "",
+	LogPath: "stderr",
 }

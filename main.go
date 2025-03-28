@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
+	"github.com/hadi77ir/go-logging"
+	"github.com/hadi77ir/nativemessagingproxy/pkg/log"
 	"os"
 
 	runnable "github.com/hadi77ir/go-runnable"
@@ -10,19 +14,29 @@ import (
 )
 
 func main() {
-	_, _ = os.Stderr.WriteString("config: ")
-	_, _ = os.Stderr.WriteString(config.ConfigPath())
-	_, _ = os.Stderr.WriteString("\n")
+	helpFlag := flag.Bool("help", false, "Show help")
+	flag.Parse()
+	if *helpFlag {
+		fmt.Println("usage: nativemessagingproxy [-help]")
+		fmt.Println("config: ", config.ConfigPath())
+		fmt.Println("config path can be set through NMPROXY_CONFIG.")
+		fmt.Println("for more info on usage and configuration, take a look at the documentation.")
+		return
+	}
 	cfg := config.FailsafeReadConfig()
+	if err := log.InitLogger(cfg.LogPath); err != nil {
+		panic(err)
+	}
+	logger := log.Global()
 
 	if cfg.Command == "" {
-		_, _ = os.Stderr.WriteString("command needs to be specified\n")
+		logger.Log(logging.FatalLevel, "command needs to be specified")
 		os.Exit(1)
 		return
 	}
-	_, _ = os.Stderr.WriteString("running bridge\n\n\n\n")
-	err := runnable.Run(server.RunBridge, cfg, nil, context.Background())
+	logger.Log(logging.InfoLevel, "running bridge")
+	err := runnable.Run(server.RunBridge, cfg, logger, context.Background())
 	if err != nil {
-		_, _ = os.Stderr.WriteString("\n\n\nerror: " + err.Error())
+		logger.Log(logging.ErrorLevel, "error: ", err)
 	}
 }
