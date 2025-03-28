@@ -29,6 +29,9 @@ import (
 const ToHost = "ToHost"
 const ToChrome = "ToChrome"
 
+// MaxMessageSize is 1MB, per Chrome documentation
+const MaxMessageSize = 1 * 1024 * 1024
+
 type receivedMessage struct {
 	Body []byte
 	Tag  string
@@ -46,6 +49,8 @@ func RunBridge(c context.Context) error {
 		logger := log.Global()
 
 		receivedCh := make(chan receivedMessage, 1024)
+
+		stdinReader := bufio.NewReaderSize(bufio.NewReader(os.Stdin), MaxMessageSize+4)
 
 		logger.Log(logging.TraceLevel, "prepare for launching the process")
 
@@ -133,7 +138,7 @@ func RunBridge(c context.Context) error {
 
 		// main operation
 		// send messages coming from chrome through proxy, to be sent later to native messaging host
-		go proxyMessage(client.Post, serverUrl+ToHost, os.Stdin, logger, errCh, closeCh)
+		go proxyMessage(client.Post, serverUrl+ToHost, stdinReader, logger, errCh, closeCh)
 		// send messages coming from native messaging host through proxy, to be sent later to chrome
 		go proxyMessage(client.Post, serverUrl+ToChrome, outPipe, logger, errCh, closeCh)
 
@@ -245,7 +250,9 @@ func proxyMessage(dst PostFunc, target string, src io.Reader, logger logging.Log
 		buf := make([]byte, 4)
 		msgLen := int(binary.NativeEndian.Uint32(buf))
 		logger.Log(logging.TraceLevel, "received msgLen, len = ", msgLen)
-		if msgLen > 8*1024*1024 {
+		if msgLen > MaxMessageSize {
+			err = fmt.Errorf("message too large (%d > %d)", msgLen, MaxMessageSize)
+			logger.Log(logging.WarnLevel, err)
 			sendError(err)
 			return
 		}
