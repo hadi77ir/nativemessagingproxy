@@ -248,14 +248,7 @@ func proxyMessage(dst PostFunc, target string, src io.Reader, logger logging.Log
 			return
 		}
 
-		buf := make([]byte, 4)
-		n, err := io.ReadAtLeast(src, buf, 4)
-		if err != nil {
-			logger.Log(logging.ErrorLevel, "got error reading message len, err = ", err)
-			sendError(err)
-			return
-		}
-		msgLen := int(binary.NativeEndian.Uint32(buf))
+		msgLen := int(binary.NativeEndian.Uint32(lenBuf))
 		logger.Log(logging.TraceLevel, "received msgLen, len = ", msgLen)
 		if msgLen > MaxMessageSize {
 			err = fmt.Errorf("message too large (%d > %d)", msgLen, MaxMessageSize)
@@ -265,7 +258,7 @@ func proxyMessage(dst PostFunc, target string, src io.Reader, logger logging.Log
 		}
 
 		msgBuf := make([]byte, msgLen)
-		n, err = io.ReadAtLeast(src, msgBuf, msgLen)
+		n, err := io.ReadAtLeast(src, msgBuf, msgLen)
 		if err != nil {
 			logger.Log(logging.ErrorLevel, "got error reading message body, err = ", err)
 			sendError(err)
