@@ -149,7 +149,7 @@ func pipeErrors(logger logging.Logger, pipe io.ReadCloser, errCh chan error, don
 	scanner := bufio.NewScanner(pipe)
 	scanner.Split(bufio.ScanLines)
 	for scanner.Scan() {
-		logger.Log(logging.InfoLevel, scanner.Text())
+		logger.Log(logging.InfoLevel, fmt.Sprint("received on stderr: ", scanner.Text()))
 		select {
 		case <-done:
 			return
