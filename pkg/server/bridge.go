@@ -118,6 +118,15 @@ func RunBridge(c context.Context) error {
 				}
 			}
 		}()
+		go func() {
+			err := cmd.Start()
+			if err != nil {
+				select {
+				case errCh <- err:
+				default:
+				}
+			}
+		}()
 
 		serverUrl := fmt.Sprintf("http://%s/", httpServer.Addr)
 		logger.Log(logging.InfoLevel, "started http server at "+serverUrl)
