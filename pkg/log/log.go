@@ -73,6 +73,8 @@ var _ io.Writer = &MutexWriter{}
 
 func logLevelString(level logging.Level) string {
 	switch level {
+	case logging.TraceLevel:
+		return "TRC"
 	case logging.DebugLevel:
 		return "DBG"
 	case logging.InfoLevel:
