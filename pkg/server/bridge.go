@@ -265,7 +265,7 @@ func proxyMessage(dst PostFunc, target string, src io.Reader, logger logging.Log
 		}
 
 		msgBuf := make([]byte, msgLen)
-		n, err := io.ReadAtLeast(src, msgBuf, msgLen)
+		n, err = io.ReadAtLeast(src, msgBuf, msgLen)
 		if err != nil {
 			logger.Log(logging.ErrorLevel, "got error reading message body, err = ", err)
 			sendError(err)
